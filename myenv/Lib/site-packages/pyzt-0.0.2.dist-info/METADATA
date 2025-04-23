@@ -1,0 +1,25 @@
+Metadata-Version: 2.1
+Name: pyzt
+Version: 0.0.2
+Summary: Life is short, I Use Python with pyzt.
+Author-email: Azat <multi.scooper.0f@icloud.com>
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Development Status :: 2 - Pre-Alpha
+Classifier: Typing :: Typed
+Classifier: Topic :: Utilities
+Classifier: Topic :: Terminals
+Classifier: Topic :: System :: System Shells
+Classifier: Topic :: System :: Networking
+Classifier: Topic :: System :: Operating System
+Classifier: Topic :: System :: Logging
+Classifier: Topic :: System :: Monitoring
+Classifier: Topic :: System :: Hardware
+Classifier: Topic :: System :: Filesystems
+Requires-Dist: typer >=0.7.0
+Project-URL: Home, https://azat.cc
+
+# pyzt
+pyzt is a Python wrapper set for some of the azt programming language methods and packages.
+

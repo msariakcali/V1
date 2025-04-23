@@ -9,7 +9,8 @@ def install_requirements():
         "pygame",
         "pyaudio",
         "opencv-python",  # Kamera işlemleri için eklendi
-        "python-dotenv"   # .env dosyaları için eklendi
+        "python-dotenv"  
+        "google-cloud-speech" # .env dosyaları için eklendi
     ]
     
     print("📦 Gerekli paketler yükleniyor...")

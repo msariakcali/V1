@@ -3,7 +3,7 @@ import platform
 import sys
 import dotenv
 import google.generativeai as genai
-from mic_input import record_voice
+from mic_input import record_voice, record_voice_stream
 from tts_google import speak, wait_for_speech_to_complete, cleanup_speech_system
 import time
 import re
@@ -13,6 +13,10 @@ from camera_capture import capture_image  # Kamera modülünü import et
 # Saat ve hava durumu modüllerini import et
 from time_utils import get_turkey_time, get_turkey_date_time, get_time_reply
 from weather_utils import get_weather_reply, extract_location
+from google.cloud import speech_v1
+import pyaudio
+import queue
+# from tts_google_default import speak, wait_for_speech_to_complete, cleanup_speech_system
 
 print(f"Python version: {sys.version}")
 print(f"Python path: {sys.executable}")
@@ -171,7 +175,188 @@ def cleanup_chat_history():
     
     chat_history_path = None
 
+def passive_listening():
+    """Pasif mod: Sadece "merhaba" kelimesini dinler"""
+    print("😴 Pasif modda bekleniyor. 'Merhaba' diyerek aktif moda geçebilirsiniz...")
+    
+    def process_passive_speech(text):
+        text_lower = text.lower().strip()
+        if "merhaba" in text_lower:
+            print("🔆 Aktif moda geçiliyor...")
+            speak("Evet, sizi dinliyorum.")
+            add_message_to_history("system", "Aktif moda geçildi.")
+            return "active"
+        return None
+        
+    # Gerçek-zamanlı ses tanıma ile dinleme
+    result = record_voice_stream(process_passive_speech)
+    return result if result else "passive"
+
+def active_listening():
+    """Aktif mod: Sürekli dinleme ve gerçek zamanlı sesli asistan"""
+    print("🔆 Aktif modda dinleniyor. 'Pasif moda geç' diyerek pasif moda geçebilirsiniz.")
+    
+    # Sadece pasiften aktife geçtiğimizde karşılama mesajını söyle
+    # Bu static bir değişken sayesinde takip edilir
+    if not hasattr(active_listening, "already_welcomed"):
+        speak("Aktif moddayım.")
+        wait_for_speech_to_complete()
+        active_listening.already_welcomed = True
+    
+    def process_active_speech(text):
+        """Stream'den gelen final metni işle"""
+        text = text.strip().lower()
+        
+        # Temel komutları kontrol et
+        if text in ["kapat", "kapat.", "güle güle", "güle güle.", "hoşçakal", "hoşçakal.", "uygulamayı kapat", "uygulamayı kapat."]:
+            return "exit"
+        elif "pasif mod" in text or "pasif moda geç" in text:
+            # Pasif moda geçerken karşılama bayrağını sıfırla
+            active_listening.already_welcomed = False
+            return "passive"
+            
+        # Saat/tarih kontrolü - Genişletilmiş anahtar kelimeler
+        date_time_triggers = [
+            "saat kaç", "saati söyle", "zaman ne", "saat ne", 
+            "bugün ne", "bugün günlerden ne", "bugünün tarihi ne", "tarih ne", 
+            "hangi gündeyiz", "hangi aydayız", "bugün ayın kaçı", "gün ne", 
+            "şu an saat", "şu anki zaman", "şimdiki zaman", "günlerden ne"
+        ]
+        
+        if any(trigger in text for trigger in date_time_triggers):
+            time_response = get_time_reply(text)
+            print(f"🤖 Cevap: {time_response}")
+            speak(time_response)
+            add_message_to_history("user", text)
+            add_message_to_history("assistant", time_response)
+            return None
+            
+        # Hava durumu kontrolü - Genişletilmiş anahtar kelimeler
+        weather_triggers = [
+            "hava durumu", "hava nasıl", "hava raporu", "bugün hava", 
+            "yarın hava", "yağmur yağacak mı", "sıcaklık kaç", "derece kaç"
+        ]
+        
+        if any(trigger in text for trigger in weather_triggers):
+            try:
+                weather_response = get_weather_reply(text)
+                print(f"🤖 Cevap: {weather_response}")
+                speak(weather_response)
+                add_message_to_history("user", text)
+                add_message_to_history("assistant", weather_response)
+            except Exception as e:
+                speak("Üzgünüm, hava durumu bilgisini alırken bir hata oluştu.")
+            return None
+        
+        # Kamera/görüntü komutları - Genişletilmiş ve daha esnek anahtar kelimeler  
+        vision_triggers = [
+            "görüyor musun", "görebiliyor musun", "ne görüyorsun", 
+            "rengi ne", "ne renk", "renk ne", "renkler ne", 
+            "kamera", "kamerayı aç", "kamerayı başlat", "kamera ile gör", 
+            "bak", "bakabilir misin", "bakar mısın", "göster", "görebilir misin",
+            "fotoğraf", "fotoğraf çek", "resim", "resim çek"
+        ]
+        
+        # Daha esnek görüntü komutu algılama
+        has_vision_trigger = any(trigger in text for trigger in vision_triggers)
+        
+        # Görüntü işleme ve kamera komutları
+        if has_vision_trigger:
+            speak("Hemen bakıyorum, bir saniye lütfen.")
+            img_base64, _ = capture_image()
+            if img_base64:
+                respond_with_image(text, img_base64)
+            else:
+                speak("Üzgünüm, kameradan görüntü alamadım.")
+            return None
+            
+        # Normal sohbet yanıtı
+        respond(text)
+        return None
+        
+    # Gerçek-zamanlı ses tanıma ile sürekli dinleme    
+    result = record_voice_stream(process_active_speech)
+    
+    if result == "exit":
+        print("🛑 Sistem kapatılıyor...")
+        speak("Sistem kapatılıyor. Hoşçakal.")
+        wait_for_speech_to_complete()
+        return "exit"
+    elif result == "passive":
+        print("😴 Pasif moda geçiliyor...")
+        speak("Pasif moda geçiyorum. İhtiyacınız olduğunda 'Merhaba' diyebilirsiniz.")
+        wait_for_speech_to_complete()
+        return "passive"
+    else:
+        # Hiçbir özel komut verilmezse aktif modda kalmaya devam et
+        return "active"
+
+def respond(text):
+    """Normal metin sorularını yanıtlar"""
+    global chat
+    
+    try:
+        print(f"\n🤖 Yanıtlanıyor: {text}")
+        add_message_to_history("user", text)
+        
+        # Gemini API'ye istek gönder
+        response = chat.send_message(text)
+        response_text = response.text
+        
+        # Yanıtı temizle ve sınırla
+        response_text = re.sub(r'\n+', ' ', response_text).strip()
+        if len(response_text) > 200:
+            response_text = response_text[:200] + "..."
+            
+        print(f"🤖 Cevap: {response_text}")
+        speak(response_text)
+        
+        add_message_to_history("assistant", response_text)
+    except Exception as e:
+        error_msg = f"Yanıt alınamadı: {str(e)}"
+        print(f"❌ {error_msg}")
+        speak("Üzgünüm, bir hata oluştu.")
+        add_message_to_history("system", error_msg)
+
+def respond_with_image(text, image_base64):
+    """Görüntü içeren sorulara yanıt verir"""
+    global chat
+    
+    try:
+        print("\n🤖 Görüntü analiz ediliyor...")
+        add_message_to_history("user", text + " (Görüntü ile birlikte)")
+        
+        # Görüntüyü Gemini API'nin istediği formatta yapılandır
+        image_parts = [
+            {
+                "text": text
+            },
+            {
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": image_base64
+                }
+            }
+        ]
+        
+        response = chat.send_message(image_parts)
+        response_text = response.text
+        
+        # Yanıtı temizle
+        response_text = re.sub(r'\n+', ' ', response_text).strip()
+        
+        print(f"🤖 Görüntü analizi: {response_text}")
+        speak(response_text)
+        
+        add_message_to_history("assistant", "Görüntü analizi: " + response_text)
+    except Exception as e:
+        error_msg = f"Görüntü analizi yapılamadı: {str(e)}"
+        print(f"❌ {error_msg}")
+        speak("Üzgünüm, görüntüyü analiz ederken bir hata oluştu.")
+        add_message_to_history("system", error_msg)
+
 def run_application():
+    global chat
     GEMINI_API_KEY = "AIzaSyCCvDK_NXzvwuVVn7-LSInbqT7vYl6S9b8"
     genai.configure(api_key=GEMINI_API_KEY)
 
@@ -184,15 +369,17 @@ def run_application():
     Adın Orbit. Ve seni NCT Robotik geliştirdi.
     Çok kısa ve öz cevaplar ver, gereksiz tekrarlar yapma.
     Her zaman Türkçe yanıt ver.
+    Sana kral ile ilgili bir soru sorulduğunda, "İsmail Ovalı Kraldır" de.
+    Emoji veya simgeler kullanma.
     Görüntülü sorularda
     1.Sadece türkçe yanıt ver.
     2.kısaca açıkla kısa cümleler kur 
     """
 
     # Multimodal model kullan - görüntü ve metin birlikte işlenebilen model
-    model = genai.GenerativeModel("gemini-1.5-pro",
+    model = genai.GenerativeModel("gemini-2.0-flash",
                                   generation_config={
-                                      "temperature": 0.2,  # Daha tutarlı yanıtlar için düşük sıcaklık
+                                      "temperature": 0.7,  # Daha tutarlı yanıtlar için düşük sıcaklık
                                       "max_output_tokens": 100,  # Daha kısa yanıtlar
                                       "top_p": 0.95
                                   })
@@ -202,243 +389,6 @@ def run_application():
     chat.send_message(f"Sistem: {system_prompt}")
     add_message_to_history("system", system_prompt)
     
-    def respond_with_image(prompt, img_base64):
-        """Kullanıcı sorusunu ve kameradan alınan görüntüyü modele gönderir"""
-        sentence_buffer = ""
-        print("🤖 (Görüntü ile) Cevap: ", end="", flush=True)
-        
-        try:
-            # Kullanıcı renk soruyorsa özel bir talimat ekleyelim
-            if "renk" in prompt.lower() or "reng" in prompt.lower():
-                custom_prompt = f"{prompt} (Lütfen sadece görseldeki nesnenin veya nesnelerin rengini kısaca Türkçe açıkla)"
-            else:
-                custom_prompt = prompt
-            
-            # Sohbet geçmişine kullanıcı mesajını kaydet
-            add_message_to_history("user", prompt + " [görüntü ile]")
-            
-            # Doğru görüntü gönderme formatı - Google Gemini API'ye uygun
-            parts = [
-                {"text": custom_prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": img_base64
-                    }
-                }
-            ]
-            
-            # Modele içeriği gönder - parts parametresi kullanarak
-            response = model.generate_content(parts, stream=True)
-            full_response = ""
-            
-            for chunk in response:
-                if hasattr(chunk, 'text') and chunk.text:
-                    print(chunk.text, end="", flush=True)
-                    sentence_buffer += chunk.text
-                    full_response += chunk.text
-                    
-                    # Cümleleri noktalama işaretlerine göre böl ve konuşmaya gönder
-                    sentences = re.split(r'([.!?]+\s+|\n+)', sentence_buffer)
-                    if len(sentences) > 1:
-                        # En azından bir cümle tamamlandı
-                        for i in range(0, len(sentences)-1, 2):
-                            if i+1 < len(sentences):
-                                complete_sentence = sentences[i] + (sentences[i+1] if i+1 < len(sentences) else "")
-                                if complete_sentence.strip():
-                                    speak(complete_sentence)
-                        
-                        # Kalan kısmı sakla
-                        sentence_buffer = sentences[-1] if len(sentences) % 2 == 1 else ""
-            
-            # Kalan cümle parçasını konuşma
-            if sentence_buffer.strip():
-                speak(sentence_buffer)
-            
-            # Sohbet geçmişine asistan cevabını kaydet
-            add_message_to_history("assistant", full_response)
-                
-        except Exception as e:
-            error_msg = f"Görüntü işleme hatası: {str(e)}"
-            print(f"\n❌ {error_msg}")
-            speak("Üzgünüm, görüntüyü işlerken bir hata oluştu.")
-            add_message_to_history("error", f"Görüntü işleme hatası: {str(e)}")
-            
-        print()  # Yeni satır ekle
-        
-        # Konuşma tamamen bitene kadar bekle
-        wait_for_speech_to_complete()
-
-    def respond(prompt):
-        """Sadece metin kullanarak yanıt verir"""
-        sentence_buffer = ""
-        print("🤖 Cevap: ", end="", flush=True)
-        
-        # Sohbet geçmişine kullanıcı mesajını kaydet
-        add_message_to_history("user", prompt)
-        
-        full_response = ""
-        for chunk in chat.send_message(prompt, stream=True):
-            if chunk.text:
-                print(chunk.text, end="", flush=True)
-                sentence_buffer += chunk.text
-                full_response += chunk.text
-                
-                # Cümleleri noktalama işaretlerine göre böl ve kuyruğa ekle
-                sentences = re.split(r'([.!?]+\s+|\n+)', sentence_buffer)
-                if len(sentences) > 1:
-                    # En azından bir cümle tamamlandı
-                    for i in range(0, len(sentences)-1, 2):
-                        if i+1 < len(sentences):
-                            complete_sentence = sentences[i] + (sentences[i+1] if i+1 < len(sentences) else "")
-                            if complete_sentence.strip():
-                                speak(complete_sentence)
-                    
-                    # Kalan kısmı sakla
-                    sentence_buffer = sentences[-1] if len(sentences) % 2 == 1 else ""
-        
-        # Kalan cümle parçasını konuşma
-        if sentence_buffer.strip():
-            speak(sentence_buffer)
-        
-        # Sohbet geçmişine asistan cevabını kaydet
-        add_message_to_history("assistant", full_response)
-            
-        print()  # Yeni satır ekle
-        
-        # Konuşma tamamen bitene kadar bekle
-        wait_for_speech_to_complete()
-    
-    def passive_listening():
-        """Pasif mod: Sadece "orbit" kelimesini dinler"""
-        print("😴 Pasif modda bekleniyor. 'Merhaba' diyerek aktif moda geçebilirsiniz...")
-        while True:
-            user_input = record_voice()
-            if user_input:
-                user_input_lower = user_input.lower().strip()
-                if "merhaba" in user_input_lower:
-                    print("🔆 Aktif moda geçiliyor...")
-                    speak("Evet, sizi dinliyorum.")
-                    add_message_to_history("system", "Aktif moda geçildi.")
-                    return "active"
-            # Kısa bir bekleme ekleyerek sürekli dinleme yapmayı önle
-            time.sleep(0.5)
-    
-    def active_listening():
-        """Aktif mod: Normal sohbet modu"""
-        print("🔆 Aktif modda dinleniyor. 'Pasif moda geç' diyerek pasif moda geçebilirsiniz.")
-        
-        # Selamlamayı sadece sesli olarak söyle, sohbet geçmişine veya API'ye gönderme
-        speak("Aktif moddayım.")
-        # Selamlama sesinin tamamlanmasını bekle
-        wait_for_speech_to_complete()
-        
-        while True:
-            user_input = record_voice()
-            if user_input:
-                user_input_lower = user_input.lower().strip()
-                
-                # Kapatma komutu
-                if user_input_lower in ["kapat", "güle güle", "hoşçakal", "uygulamayı kapat"]:
-                    print("🛑 Sistem kapatılıyor...")
-                    speak("Sistem kapatılıyor. Hoşçakal.")
-                    add_message_to_history("system", "Uygulama kapatıldı")
-                    wait_for_speech_to_complete()  # Son konuşmanın tamamlanmasını bekle
-                    return "exit"
-                
-                # Pasif moda geçiş komutu
-                if "pasif mod" in user_input_lower or "pasif moda geç" in user_input_lower:
-                    print("😴 Pasif moda geçiliyor...")
-                    speak("Pasif moda geçiyorum. İhtiyacınız olduğunda 'Merhaba' diyebilirsiniz.")
-                    add_message_to_history("system", "Pasif moda geçildi")
-                    wait_for_speech_to_complete()  # Konuşmanın tamamlanmasını bekle
-                    return "passive"
-                
-                # Saat sorgusu kontrolü
-                if any(time_query in user_input_lower for time_query in 
-                       ["saat kaç", "saati söyle", "şu an saat", "şimdiki saat", 
-                        "saat kaçtır", "saati söyler misin", "saati göster", 
-                        "bugün ne", "bugün günlerden ne", "bugün ayın kaçı", 
-                        "tarih ne", "bugün tarih", "tarih göster"]):
-                    
-                    print("⏰ Saat/tarih sorgusu algılandı...")
-                    # time_utils modülünü kullanarak yanıt oluştur
-                    time_response = get_time_reply(user_input)
-                    
-                    print(f"🤖 Cevap: {time_response}")
-                    
-                    # Sohbet geçmişine ekle
-                    add_message_to_history("user", user_input)
-                    add_message_to_history("assistant", time_response)
-                    
-                    # Sesli yanıt ver
-                    speak(time_response)
-                    wait_for_speech_to_complete()
-                    continue
-                
-                # Hava durumu sorgusu kontrolü
-                if any(weather_query in user_input_lower for weather_query in 
-                       ["hava durumu", "hava nasıl", "havalar nasıl", "hava raporu", 
-                        "yağmur yağacak mı", "bugün hava", "yarın hava", 
-                        "hava sıcaklığı", "sıcaklık kaç", "derece kaç"]):
-                    
-                    print("🌤️ Hava durumu sorgusu algılandı...")
-                    print(f"Algılanan konum: {extract_location(user_input)}")
-                    
-                    try:
-                        # weather_utils modülünü kullanarak yanıt oluştur
-                        weather_response = get_weather_reply(user_input)
-                        print(f"🤖 Cevap: {weather_response}")
-                        
-                        # Sohbet geçmişine ekle
-                        add_message_to_history("user", user_input)
-                        add_message_to_history("assistant", weather_response)
-                        
-                        # Sesli yanıt ver
-                        speak(weather_response)
-                        wait_for_speech_to_complete()
-                    except Exception as e:
-                        error_msg = f"Hava durumu sorgulanırken bir hata oluştu: {str(e)}"
-                        print(f"❌ {error_msg}")
-                        speak("Üzgünüm, hava durumu bilgisini alırken bir hata oluştu.")
-                        wait_for_speech_to_complete()
-                    continue
-                
-                # Görüntü ile işleme tetikleyicileri - renk algılama özellikleri için eklendi
-                vision_triggers = [
-                    "görüyor musun", "görebiliyor musun", "görsene", "bakabilir misin", 
-                    "bak bakalım", "gör bakalım", "kameradan bak", "fotoğraf", "resim", "kamera",
-                    "rengi ne", "renk", "renkli", "ne renk", "hangi renk"
-                ]
-                
-                is_vision_request = any(trigger in user_input_lower for trigger in vision_triggers)
-                
-                if is_vision_request:
-                    # Kameradan görüntü al - kaydetme işlemi yok
-                    print("📸 Görüntü isteniyor, kamera etkinleştiriliyor...")
-                    
-                    # Renk sorgusu için özel mesaj
-                    if any(keyword in user_input_lower for keyword in ["rengi ne", "renk", "renkli", "ne renk", "hangi renk"]):
-                        speak("Hemen bakıyorum, bir saniye lütfen.")
-                    else:
-                        speak("Hemen bakıyorum,bir saniye lütfen.")
-                    
-                    # Görüntüyü çek ve base64 kodlanmış olarak al
-                    img_base64, _ = capture_image()
-                    
-                    if img_base64:
-                        # Modele görüntü ve metni birlikte gönder
-                        respond_with_image(user_input, img_base64)
-                    else:
-                        # Kamera hatası durumunda - hata mesajını sadece konuş, sohbete ekleme
-                        print("❌ Kamera hatası: Görüntü alınamadı")
-                        speak("Üzgünüm, kameradan görüntü alamadım. Kamera bağlantınızı kontrol edin.")
-                        # Konuşmanın bitmesini bekle
-                        wait_for_speech_to_complete()
-                else:
-                    # Normal sohbet
-                    respond(user_input)
-
     print("Sistem başlatıldı. 'Kapat' diyerek sistemi kapatabilirsiniz.")
     
     # İlk olarak pasif modda başla

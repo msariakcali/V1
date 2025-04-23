@@ -431,7 +431,7 @@ def extract_location(query):
                 return city[0].upper() + city[1:]
     
     # Varsayılan konum (belirtilmemişse)
-    return "Istanbul"  # Varsayılan olarak İstanbul
+    return "Denizli"  # Varsayılan olarak İstanbul
 
 def get_weather_reply(query):
     """
