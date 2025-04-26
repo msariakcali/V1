@@ -357,7 +357,7 @@ def respond_with_image(text, image_base64):
 
 def run_application():
     global chat
-    GEMINI_API_KEY = "AIzaSyCCvDK_NXzvwuVVn7-LSInbqT7vYl6S9b8"
+    GEMINI_API_KEY = "------"
     genai.configure(api_key=GEMINI_API_KEY)
 
     # Yeni bir sohbet geçmişi dosyası oluştur
